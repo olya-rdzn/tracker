@@ -25,8 +25,20 @@ input,select{border:1px solid #cbd5e1;border-radius:8px;padding:7px 9px;backgrou
 label{display:block;font-weight:600;font-size:12px;margin:10px 0 4px}
 label input{display:block;width:100%;font-weight:400}
 .card{background:#fff;border:1px solid var(--b);border-radius:12px;padding:16px;margin-bottom:16px}
-.grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start}
-@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.grid{display:grid;grid-template-columns:var(--pw,2fr) 10px 1fr;align-items:start}
+.grid.col{grid-template-columns:1fr 10px auto}
+.hdl{cursor:col-resize;align-self:stretch;display:flex;justify-content:center;touch-action:none;user-select:none}
+.hdl::after{content:"";width:3px;border-radius:2px;background:var(--b);margin:8px 0}
+.hdl:hover::after,.hdl.on::after{background:var(--a)}
+@media(max-width:860px){.grid,.grid.col{grid-template-columns:1fr}.hdl{display:none}}
+.pill{border-radius:999px;padding:3px 10px;margin:8px 6px 0 0}
+.pill.on{border-color:var(--a);background:#f5f3ff}
+tr.sel td{background:#f5f3ff}
+.inl{display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400}
+.inl input{display:inline-block;width:auto}
+.sm{padding:3px 8px;font-size:12px}
+.grid.ro{grid-template-columns:1fr}
+.tip{position:fixed;pointer-events:none;background:var(--t);color:#fff;padding:4px 8px;border-radius:6px;font-size:12px;z-index:20;display:none}
 .head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
 .g5{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
 .row{display:flex;gap:8px;align-items:center;margin-top:12px}
@@ -49,6 +61,8 @@ dialog::backdrop{background:rgba(15,23,42,.4)}
 <body>
 <main id="app"></main>
 <dialog id="cd"></dialog>
+<div id="tip" class="tip"></div>
+<input type="file" id="imp" accept=".csv,text/csv" hidden>
 <script>
 const sb = supabase.createClient(
   'https://lxkalpglmelzggkiazfw.supabase.co',
@@ -60,7 +74,8 @@ const PRESETS = {
   pct:   {unit:'%',min:0,max:100,step:1,target:80,parts:[]},
   pts:   {unit:'pts',min:0,max:50,step:1,target:40,parts:[]}
 };
-const S = {user:null,courses:[],students:[],enr:[],tests:[],cid:null,metric:'_',edit:null};
+const pref = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const S = {user:null,courses:[],students:[],enr:[],tests:[],cid:null,metric:'_',edit:null,sel:new Set(),avg:false,pw:+pref('ep-pw') || 0,col:pref('ep-col') === '1'};
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num = v => (v === undefined || v === null || v === '' || isNaN(v)) ? null : +v;
@@ -108,42 +123,61 @@ const series = (c, ts, sid, m) => ts.map(t => val(c, t, sid, m)).filter(v => v !
 /* ---------- render ---------- */
 function render() {
   const app = $('#app');
-  if (!S.user) {
+  if (S.rec) {
+    app.innerHTML = `<form id="newpw" class="card auth"><h2>New password</h2><label>Password<input name="password" type="password" required minlength="6" autocomplete="new-password"></label><div class="row"><button class="pri">Save password</button></div></form>`;
+    return;
+  }
+  if (S.ro === 'loading') { app.innerHTML = '<p class="mt" style="padding:16px">Loading…</p>'; return; }
+  if (S.ro === 'bad') { app.innerHTML = '<div class="card empty"><h3>Link not valid</h3><p class="mt">The link is wrong or sharing was turned off.</p></div>'; return; }
+  if (!S.user && !S.ro) {
     app.innerHTML = `<form id="auth" class="card auth"><h2>ExamPulse</h2>
       <label>Email<input name="email" type="email" required autocomplete="email"></label>
       <label>Password<input name="password" type="password" required minlength="6" autocomplete="current-password"></label>
-      <div class="row"><button class="pri" data-mode="in">Sign in</button><button data-mode="up">Create account</button></div></form>`;
+      <div class="row"><button class="pri" data-mode="in">Sign in</button><button data-mode="up">Create account</button><span class="sp"></span><button type="button" data-act="forgot">Forgot password?</button></div></form>`;
     return;
   }
   const c = course();
-  const nav = `<div class="bar"><h2>ExamPulse</h2>${S.courses.map(x => `<button class="tab${x.id === S.cid ? ' on' : ''}" data-act="tab" data-id="${x.id}">${esc(x.name)}</button>`).join('')}
-    <button data-act="newCourse">+ Course</button><span class="sp"></span><span class="mt">${esc(S.user.email)}</span><button data-act="out">Sign out</button></div>`;
+  const nav = `<div class="bar"><h2>${S.ro ? esc(S.students[0]?.name) : 'ExamPulse'}</h2>${S.courses.map(x => `<button class="tab${x.id === S.cid ? ' on' : ''}" data-act="tab" data-id="${x.id}">${esc(x.name)}</button>`).join('')}
+    ${S.ro ? '<span class="sp"></span><span class="mt">Read-only</span>' : `<button data-act="newCourse">+ Course</button><span class="sp"></span><span class="mt">${esc(S.user.email)}</span><button data-act="out">Sign out</button>`}</div>`;
   if (!c) {
-    app.innerHTML = nav + `<div class="card empty"><h3>No courses yet</h3><p class="mt">Add a course to start tracking scores.</p><button class="pri" data-act="newCourse">Add course</button></div>`;
+    app.innerHTML = nav + `<div class="card empty"><h3>No courses yet</h3>${S.ro ? '' : '<p class="mt">Add a course to start tracking scores.</p><button class="pri" data-act="newCourse">Add course</button>'}</div>`;
     return;
   }
-  const opts = c.parts.length ? `<select id="metric"><option value="_">Overall</option>${c.parts.map(p => `<option value="${p.id}"${S.metric === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+  const opts = (S.ro ? '' : `<label class="inl"><input type="checkbox" id="avg"${S.avg ? ' checked' : ''}> Class average</label>`) + (c.parts.length ? `<select id="metric"><option value="_">Overall</option>${c.parts.map(p => `<option value="${p.id}"${S.metric === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '');
   app.innerHTML = nav + `
   <div class="head"><h2>${esc(c.name)}</h2><span class="mt">${fmt(c.min_score)}–${fmt(c.max_score)} ${esc(c.unit)}${c.target_score != null ? ` · target ${fmt(c.target_score)}` : ''}</span>
-    <span class="sp"></span><button data-act="csv">Export CSV</button><button data-act="editCourse">Course settings</button></div>
-  <div class="grid">
+    ${S.ro ? '' : '<span class="sp"></span><button data-act="imp">Import CSV</button><button data-act="csv">Export CSV</button><button data-act="editCourse">Course settings</button>'}</div>
+  <div class="grid${S.ro ? ' ro' : S.col ? ' col' : ''}"${S.pw ? ` style="--pw:${S.pw}px"` : ''}>
     <section class="card"><div class="head"><h3>Progress</h3><span class="sp"></span>${opts}</div><div id="viz"></div></section>
-    <section class="card"><h3>Students</h3>
+    ${S.ro ? '' : `<div class="hdl" id="hdl" role="separator" aria-label="Resize progress panel"></div>
+    <section class="card"><div class="head" style="margin:0"><h3>Students</h3><span class="sp"></span><button data-act="toggleStu" aria-label="Collapse or expand students">${S.col ? '▸' : '▾'}</button></div>
+      <div${S.col ? ' hidden' : ''}>
       <form id="addStu" class="row"><input name="n" list="allStu" placeholder="Student name" required style="flex:1"><button class="pri">Add</button></form>
       <datalist id="allStu">${S.students.map(s => `<option value="${esc(s.name)}">`).join('')}</datalist>
-      <div id="roster"></div></section>
+      <div id="roster"></div></div></section>`}
   </div>
-  <section class="card"><h3>${S.edit ? 'Edit test' : 'Record test'}</h3><div id="form"></div></section>
+  ${S.ro ? '' : `<section class="card"><h3>${S.edit ? 'Edit test' : 'Record test'}</h3><div id="form"></div></section>`}
   <section class="card"><h3>Tests</h3><div id="log" class="wrap"></div></section>`;
-  renderRoster(); renderViz(); renderForm(); renderLog();
+  if (!S.ro) { renderRoster(); renderForm(); }
+  renderViz(); renderLog();
 }
 function renderRoster() {
   const r = roster();
-  $('#roster').innerHTML = r.length ? r.map(s => `<div class="row"><span class="dot" style="background:${s.color}"></span><span style="flex:1">${esc(s.name)}</span><button class="del" data-act="rmStu" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">Remove</button></div>`).join('') : '<p class="mt">No students yet.</p>';
+  $('#roster').innerHTML = r.length ? r.map(s => `<div class="row" style="flex-wrap:wrap"><span class="dot" style="background:${s.color}"></span><span style="flex:1;min-width:90px">${esc(s.name)}${s.share_token ? ' 🔗' : ''}</span>
+    <button class="sm" data-act="renameStu" data-id="${s.id}">Rename</button><button class="sm" data-act="share" data-id="${s.id}">Share</button><button class="sm del" data-act="rmStu" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">Remove</button></div>`).join('') : '<p class="mt">No students yet.</p>';
 }
+const slope = v => {
+  const n = v.length; if (n < 2) return null;
+  const mx = (n - 1) / 2, my = v.reduce((a, b) => a + b, 0) / n; let a = 0, b = 0;
+  v.forEach((y, i) => { a += (i - mx) * (y - my); b += (i - mx) ** 2; });
+  return a / b;
+};
+const sgn = n => n === null ? '–' : (n > 0 ? '+' : '') + fmt(n);
+const cls = n => n > 0 ? 'up' : n < 0 ? 'dn' : '';
 function renderViz() {
   const c = course(), ts = tests(), ros = roster(), m = S.metric;
-  const pts = ts.filter(t => ros.some(s => val(c, t, s.id, m) !== null));
+  S.sel = new Set([...S.sel].filter(id => ros.some(s => s.id === id)));
+  const sel = S.sel, pts = ts.filter(t => ros.some(s => val(c, t, s.id, m) !== null));
   let svg = '<p class="mt">No scores yet.</p>';
   if (pts.length) {
     const W = 760, H = 300, L = 40, R = 16, T = 14, B = 44, lo = c.min_score, hi = c.max_score;
@@ -156,25 +190,32 @@ function renderViz() {
     }
     if (c.target_score != null) g += `<line x1="${L}" x2="${W - R}" y1="${y(c.target_score)}" y2="${y(c.target_score)}" stroke="#059669" stroke-dasharray="5 4"/>`;
     pts.forEach((t, i) => g += `<text x="${x(i)}" y="${H - B + 16}" text-anchor="middle">${esc(t.name.slice(0, 12))}</text><text x="${x(i)}" y="${H - B + 30}" text-anchor="middle">${t.test_date.slice(5)}</text>`);
+    if (S.avg) {
+      const p = pts.map((t, i) => { const v = ros.map(s => val(c, t, s.id, m)).filter(n => n !== null); return [i, v.length ? v.reduce((a, b) => a + b, 0) / v.length : null]; }).filter(a => a[1] !== null);
+      g += `<g><polyline fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="2 4" points="${p.map(a => x(a[0]) + ',' + y(a[1])).join(' ')}"/>` +
+        p.map(a => `<circle cx="${x(a[0])}" cy="${y(a[1])}" r="3.5" fill="#64748b" data-tip="Class average – ${esc(pts[a[0]].name)}: ${fmt(a[1])}"/>`).join('') + '</g>';
+    }
     ros.forEach(s => {
-      const p = pts.map((t, i) => [i, val(c, t, s.id, m)]).filter(a => a[1] !== null);
-      g += `<polyline fill="none" stroke="${s.color}" stroke-width="2.5" points="${p.map(a => x(a[0]) + ',' + y(a[1])).join(' ')}"/>` +
-        p.map(a => `<circle cx="${x(a[0])}" cy="${y(a[1])}" r="4.5" fill="${s.color}"><title>${esc(s.name)} – ${esc(pts[a[0]].name)}: ${fmt(a[1])}</title></circle>`).join('');
+      const p = pts.map((t, i) => [i, val(c, t, s.id, m)]).filter(a => a[1] !== null), P = p.map(a => x(a[0]) + ',' + y(a[1])).join(' ');
+      g += `<g data-sid="${s.id}" opacity="${sel.size && !sel.has(s.id) ? .18 : 1}"><polyline fill="none" stroke="${s.color}" stroke-width="${sel.has(s.id) ? 4 : 2.5}" points="${P}"/>` +
+        `<polyline fill="none" stroke="transparent" stroke-width="14" points="${P}" data-tip="${esc(s.name)}"/>` +
+        p.map(a => `<circle cx="${x(a[0])}" cy="${y(a[1])}" r="4.5" fill="${s.color}" data-tip="${esc(s.name)} – ${esc(pts[a[0]].name)}: ${fmt(a[1])}"/>`).join('') + '</g>';
     });
     svg = `<svg class="ch" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Score progress chart">${g}</svg>`;
   }
-  // summary table
+  const legend = ros.length ? `<div>${ros.map(s => `<button class="pill${sel.has(s.id) ? ' on' : ''}" data-act="pick" data-id="${s.id}"><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</button>`).join('')}${sel.size ? '<button class="pill" data-act="clearSel">Clear</button>' : ''}</div>` : '';
   const pc = c.parts;
   const rows = ros.map(s => {
-    const v = series(c, ts, s.id, m), last = v.at(-1) ?? null, d = v.length > 1 ? last - v[0] : null;
-    const avg = v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    const v = series(c, ts, s.id, m), last = v.at(-1) ?? null, d = v.length > 1 ? last - v[0] : null, sl = slope(v);
+    const avg = v.length ? v.reduce((a, b) => a + b, 0) / v.length : null, best = v.length ? Math.max(...v) : null;
     const gap = last !== null && c.target_score != null ? last - c.target_score : null;
-    return `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</td><td>${v.length}</td><td>${fmt(last)}</td>
-      <td class="${d > 0 ? 'up' : d < 0 ? 'dn' : ''}">${d === null ? '–' : (d > 0 ? '+' : '') + fmt(d)}</td><td>${fmt(avg)}</td>
-      <td class="${gap >= 0 ? 'up' : 'dn'}">${gap === null ? '–' : (gap > 0 ? '+' : '') + fmt(gap)}</td>
-      ${pc.map(p => `<td>${fmt(series(c, ts, s.id, p.id).at(-1) ?? null)}</td>`).join('')}</tr>`;
+    const lat = pc.map(p => [p.name, series(c, ts, s.id, p.id).at(-1) ?? null]);
+    const low = lat.filter(a => a[1] !== null).sort((a, b) => a[1] - b[1]);
+    return `<tr class="${sel.has(s.id) ? 'sel' : ''}"><td><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</td><td>${v.length}</td><td>${fmt(last)}</td>
+      <td class="${cls(d)}">${sgn(d)}</td><td>${fmt(avg)}</td><td>${fmt(best)}</td><td class="${cls(sl)}">${sgn(sl)}</td><td class="${gap === null ? '' : gap >= 0 ? 'up' : 'dn'}">${sgn(gap)}</td>
+      ${lat.map(a => `<td>${fmt(a[1])}</td>`).join('')}${pc.length ? `<td>${low.length > 1 ? esc(low[0][0]) : '–'}</td>` : ''}</tr>`;
   }).join('');
-  $('#viz').innerHTML = svg + (ros.length ? `<div class="wrap" style="margin-top:12px"><table><tr><th>Student</th><th>Tests</th><th>Latest</th><th>Change</th><th>Average</th><th>vs target</th>${pc.map(p => `<th>${esc(p.name)}</th>`).join('')}</tr>${rows}</table></div>` : '');
+  $('#viz').innerHTML = svg + legend + (ros.length ? `<div class="wrap" style="margin-top:12px"><table><tr><th>Student</th><th>Tests</th><th>Latest</th><th>Change</th><th>Average</th><th>Best</th><th title="Average change per test">Trend</th><th>vs target</th>${pc.map(p => `<th>${esc(p.name)}</th>`).join('')}${pc.length ? '<th>Weakest</th>' : ''}</tr>${rows}</table></div>` : '');
 }
 function renderForm() {
   const c = course(), ros = roster(), t = S.edit && S.tests.find(x => x.id === S.edit);
@@ -188,8 +229,8 @@ function renderForm() {
 }
 function renderLog() {
   const ts = tests().reverse();
-  $('#log').innerHTML = ts.length ? `<table>${ts.map(t => `<tr><td>${t.test_date}</td><td style="width:100%">${esc(t.name)}</td><td>${Object.keys(t.scores || {}).length} students</td>
-    <td><button data-act="editTest" data-id="${t.id}">Edit</button> <button class="del" data-act="delTest" data-id="${t.id}">Delete</button></td></tr>`).join('')}</table>` : '<p class="mt">No tests yet.</p>';
+  $('#log').innerHTML = ts.length ? `<table>${ts.map(t => `<tr><td>${t.test_date}</td><td style="width:100%">${esc(t.name)}</td>${S.ro ? `<td>${fmt(val(course(), t, S.students[0].id, '_'))}</td>` : `<td>${Object.keys(t.scores || {}).length} students</td>
+    <td><button data-act="editTest" data-id="${t.id}">Edit</button> <button class="del" data-act="delTest" data-id="${t.id}">Delete</button></td>`}</tr>`).join('')}</table>` : '<p class="mt">No tests yet.</p>';
 }
 
 /* ---------- course dialog ---------- */
@@ -211,8 +252,9 @@ function openCourse(edit) {
 }
 async function saveCourse(f) {
   const d = $('#cd'), id = d.dataset.id;
-  const row = {name: f.name.value.trim(), unit: f.unit.value.trim(), min_score: +f.min.value, max_score: +f.max.value, step: +f.step.value || 1,
-    target_score: num(f.target.value),
+  const E = f.elements;
+  const row = {name: E.name.value.trim(), unit: E.unit.value.trim(), min_score: +E.min.value, max_score: +E.max.value, step: +E.step.value || 1,
+    target_score: num(E.target.value),
     parts: [...f.querySelectorAll('[data-pid]')].filter(i => i.value.trim()).map(i => ({id: i.dataset.pid || uid(), name: i.value.trim()}))};
   if (row.max_score <= row.min_score) return toast('Max must be greater than min.', 1);
   if (id) { await q(sb.from('tracker-courses').update(row).eq('id', id)); Object.assign(S.courses.find(c => c.id === id), row); }
@@ -225,13 +267,13 @@ async function saveTest(f) {
   const c = course(), sc = {};
   f.querySelectorAll('[data-s]').forEach(i => { const v = num(i.value); if (v !== null) (sc[i.dataset.s] ??= {})[i.dataset.p] = v; });
   if (!Object.keys(sc).length) return toast('Enter at least one score.', 1);
-  const row = {course_id: c.id, name: f.tname.value.trim(), test_date: f.tdate.value, scores: sc};
+  const row = {course_id: c.id, name: f.elements.tname.value.trim(), test_date: f.elements.tdate.value, scores: sc};
   if (S.edit) { await q(sb.from('tracker-tests').update(row).eq('id', S.edit)); Object.assign(S.tests.find(t => t.id === S.edit), row); }
   else { const id = uid(); await q(sb.from('tracker-tests').insert({id, ...row})); S.tests.push({id, created_at: new Date().toISOString(), ...row}); }
   S.edit = null; render(); toast('Test saved.');
 }
 async function addStudent(f) {
-  const name = f.n.value.trim();
+  const name = f.elements.n.value.trim();
   let s = S.students.find(x => x.name.toLowerCase() === name.toLowerCase());
   if (s && S.enr.some(e => e.course_id === S.cid && e.student_id === s.id)) return toast('Already in this course.', 1);
   if (!s) {
@@ -261,7 +303,100 @@ function csv() {
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+function parseCsv(t) {
+  const l = t.split('\n')[0], d = (l.match(/;/g) || []).length > (l.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let r = [], f = '', qt = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (qt) { if (ch === '"') { if (t[i + 1] === '"') { f += '"'; i++; } else qt = false; } else f += ch; }
+    else if (ch === '"') qt = true;
+    else if (ch === d) { r.push(f); f = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; r.push(f); rows.push(r); r = []; f = ''; }
+    else f += ch;
+  }
+  if (f || r.length) { r.push(f); rows.push(r); }
+  return rows.filter(r => r.some(x => x.trim()));
+}
+// Expects the layout of Export CSV: Date, Test, then "Student – Skill" columns ("Overall" columns are ignored).
+async function importCsv(file) {
+  const c = course(), rows = parseCsv((await file.text()).replace(/^\uFEFF/, '')), h = rows.shift() || [];
+  if (h.length < 3 || !/date/i.test(h[0])) return toast('Use the layout of Export CSV: Date, Test, then "Student – Skill" columns.', 1);
+  const cols = [];
+  for (let i = 2; i < h.length; i++) {
+    const k = h[i].lastIndexOf(' – '); if (k < 0) continue;
+    const pn = h[i].slice(k + 3).trim().toLowerCase();
+    const p = c.parts.find(x => x.name.toLowerCase() === pn) || (!c.parts.length && pn === 'score' ? {id: '_'} : null);
+    if (p) cols.push([i, h[i].slice(0, k).trim(), p.id]);
+  }
+  if (!cols.length) return toast('No columns match this course\'s sub-scores.', 1);
+  const ids = {};
+  for (const sn of new Set(cols.map(x => x[1]))) {
+    let s = S.students.find(x => x.name.toLowerCase() === sn.toLowerCase());
+    if (!s) { s = {id: uid(), name: sn, color: COLORS[S.students.length % COLORS.length]}; await q(sb.from('tracker-students').insert(s)); S.students.push(s); }
+    if (!S.enr.some(e => e.course_id === c.id && e.student_id === s.id)) { const e = {course_id: c.id, student_id: s.id}; await q(sb.from('tracker-enrollments').insert(e)); S.enr.push(e); }
+    ids[sn] = s.id;
+  }
+  const add = [];
+  rows.forEach(r => {
+    const date = r[0].trim(), name = (r[1] || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !name || S.tests.some(t => t.course_id === c.id && t.test_date === date && t.name === name)) return;
+    const sc = {};
+    cols.forEach(([i, sn, pid]) => { const v = num((r[i] || '').trim()); if (v !== null && v >= c.min_score && v <= c.max_score) (sc[ids[sn]] ??= {})[pid] = v; });
+    if (Object.keys(sc).length) add.push({id: uid(), course_id: c.id, name, test_date: date, scores: sc});
+  });
+  if (!add.length) return toast('Nothing to import (dates must be YYYY-MM-DD; existing tests are skipped).', 1);
+  await q(sb.from('tracker-tests').insert(add));
+  add.forEach(t => S.tests.push({created_at: new Date().toISOString(), ...t}));
+  render(); toast(`Imported ${add.length} tests` + (rows.length > add.length ? `, skipped ${rows.length - add.length}.` : '.'));
+}
+
+const genToken = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+async function setShare(id, tok) {
+  await q(sb.from('tracker-students').update({share_token: tok}).eq('id', id));
+  S.students.find(x => x.id === id).share_token = tok; renderRoster(); openShare(id);
+}
+function openShare(id) {
+  const s = S.students.find(x => x.id === id), d = $('#cd'), link = s.share_token ? location.origin + location.pathname + '#s=' + s.share_token : '';
+  d.dataset.id = '';
+  d.innerHTML = `<h3>Share ${esc(s.name)}</h3>` + (link
+    ? `<p class="mt">Anyone with this link can see ${esc(s.name)}'s scores in all their courses, read-only.</p><input id="lnk" readonly value="${esc(link)}" style="width:100%">
+       <div class="row"><button class="del" data-act="unshare" data-id="${id}">Stop sharing</button><span class="sp"></span><button data-act="newLink" data-id="${id}">New link</button><button class="pri" data-act="copy">Copy link</button></div>`
+    : `<p class="mt">Create a read-only link to show ${esc(s.name)} their progress.</p><div class="row"><span class="sp"></span><button data-act="closeDlg">Cancel</button><button class="pri" data-act="newLink" data-id="${id}">Create link</button></div>`);
+  if (!d.open) d.showModal();
+}
+async function loadShared(tok) {
+  const {data, error} = await sb.rpc('tracker_shared_student', {p_token: tok});
+  if (error || !data) { S.ro = 'bad'; return render(); }
+  Object.assign(S, {students: [{id: 'x', name: data.name, color: data.color}], courses: [], enr: [], tests: [], ro: true});
+  data.courses.forEach((c, i) => {
+    const id = 'c' + i;
+    S.courses.push({...c, id, created_at: String(i).padStart(3, '0'), parts: c.parts || []});
+    S.enr.push({course_id: id, student_id: 'x'});
+    c.tests.forEach((t, j) => S.tests.push({id: id + 't' + j, course_id: id, name: t.name, test_date: t.test_date, created_at: String(j).padStart(5, '0'), scores: {x: t.scores}}));
+  });
+  S.cid = S.courses[0]?.id || null; render();
+}
+
 const ACT = {
+  forgot: async () => {
+    const email = $('#auth').elements.email.value.trim();
+    if (!email) return toast('Enter your email first.', 1);
+    const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo: location.origin + location.pathname});
+    error ? toast(error.message, 1) : toast('Check your email for the reset link.');
+  },
+  renameStu: async el => {
+    const s = S.students.find(x => x.id === el.dataset.id), n = (prompt('Rename student', s.name) || '').trim();
+    if (!n || n === s.name) return;
+    await q(sb.from('tracker-students').update({name: n}).eq('id', s.id)); s.name = n; render();
+  },
+  share: el => openShare(el.dataset.id),
+  newLink: el => setShare(el.dataset.id, genToken()),
+  unshare: el => setShare(el.dataset.id, null),
+  copy: () => { const i = $('#lnk'); i.select(); navigator.clipboard?.writeText(i.value); toast('Link copied.'); },
+  imp: () => $('#imp').click(),
+  toggleStu: () => { S.col = !S.col; try { localStorage.setItem('ep-col', S.col ? 1 : 0); } catch {} render(); },
+  pick: el => { S.sel.has(el.dataset.id) ? S.sel.delete(el.dataset.id) : S.sel.add(el.dataset.id); renderViz(); },
+  clearSel: () => { S.sel.clear(); renderViz(); },
   tab: el => { S.cid = el.dataset.id; S.metric = '_'; S.edit = null; render(); },
   newCourse: () => openCourse(false),
   editCourse: () => openCourse(true),
@@ -293,22 +428,41 @@ const ACT = {
 document.addEventListener('click', e => {
   const p = e.target.closest('[data-preset]');
   if (p) {
-    const f = $('#cf'), v = PRESETS[p.dataset.preset];
-    if (!f.name.value) f.name.value = p.textContent;
-    f.unit.value = v.unit; f.min.value = v.min; f.max.value = v.max; f.step.value = v.step; f.target.value = v.target;
+    const E = $('#cf').elements, v = PRESETS[p.dataset.preset];
+    if (!E.name.value) E.name.value = p.textContent;
+    E.unit.value = v.unit; E.min.value = v.min; E.max.value = v.max; E.step.value = v.step; E.target.value = v.target;
     $('#parts').innerHTML = v.parts.map(n => partRow({id: '', name: n})).join('');
     return;
   }
   const el = e.target.closest('[data-act]');
   if (el && ACT[el.dataset.act]) ACT[el.dataset.act](el);
 });
-document.addEventListener('change', e => { if (e.target.id === 'metric') { S.metric = e.target.value; renderViz(); } });
+document.addEventListener('change', async e => {
+  if (e.target.id === 'metric') { S.metric = e.target.value; renderViz(); }
+  else if (e.target.id === 'avg') { S.avg = e.target.checked; renderViz(); }
+  else if (e.target.id === 'imp') { const f = e.target.files[0]; e.target.value = ''; if (f) try { await importCsv(f); } catch (err) { console.error(err); toast('Import failed.', 1); } }
+});
+let hovSid = null;
+document.addEventListener('mousemove', e => {
+  const t = e.target.closest?.('#viz [data-tip]'), g = e.target.closest?.('#viz [data-sid]'), tip = $('#tip'), sid = g?.dataset.sid || null;
+  if (sid !== hovSid) { hovSid = sid; document.querySelectorAll('#viz g[data-sid]').forEach(n => n.style.opacity = sid && n.dataset.sid !== sid ? .15 : ''); }
+  if (t) { tip.textContent = t.dataset.tip; tip.style.display = 'block'; tip.style.left = e.clientX + 12 + 'px'; tip.style.top = e.clientY + 12 + 'px'; }
+  else tip.style.display = 'none';
+});
+document.addEventListener('pointerdown', e => {
+  const h = e.target.closest('#hdl'); if (!h) return;
+  const g = h.parentElement, w0 = g.firstElementChild.offsetWidth, x0 = e.clientX;
+  h.setPointerCapture(e.pointerId); h.classList.add('on');
+  const mv = ev => { S.pw = Math.round(Math.min(g.offsetWidth - 240, Math.max(320, w0 + ev.clientX - x0))); g.style.setProperty('--pw', S.pw + 'px'); };
+  const up = () => { h.classList.remove('on'); h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); try { localStorage.setItem('ep-pw', S.pw); } catch {} };
+  h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+});
 document.addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target;
   try {
     if (f.id === 'auth') {
-      const cred = {email: f.email.value, password: f.password.value};
+      const cred = {email: f.elements.email.value, password: f.elements.password.value};
       if (e.submitter?.dataset.mode === 'up') {
         const {data, error} = await sb.auth.signUp(cred);
         if (error) return toast(error.message, 1);
@@ -318,6 +472,11 @@ document.addEventListener('submit', async e => {
         if (error) toast(error.message, 1);
       }
     }
+    else if (f.id === 'newpw') {
+      const {error} = await sb.auth.updateUser({password: f.elements.password.value});
+      if (error) return toast(error.message, 1);
+      S.rec = false; toast('Password updated.'); render();
+    }
     else if (f.id === 'cf') await saveCourse(f);
     else if (f.id === 'testForm') await saveTest(f);
     else if (f.id === 'addStu') await addStudent(f);
@@ -325,7 +484,12 @@ document.addEventListener('submit', async e => {
 });
 
 /* ---------- boot ---------- */
-sb.auth.onAuthStateChange((_, session) => {
+const shareHash = location.hash.match(/^#s=([0-9a-f]{20,})$/i);
+S.ro = shareHash ? 'loading' : false;
+if (shareHash) { render(); loadShared(shareHash[1]); }
+sb.auth.onAuthStateChange((event, session) => {
+  if (S.ro) return;
+  if (event === 'PASSWORD_RECOVERY') { S.rec = true; setTimeout(render, 0); }
   const u = session?.user || null;
   if (u?.id === S.user?.id && S.booted) return;      // ignore token refreshes
   S.user = u; S.booted = true;
