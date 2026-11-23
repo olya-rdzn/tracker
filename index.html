@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExamPulse</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{--a:#7c3aed;--ad:#6d28d9;--bg:#f8fafc;--b:#e2e8f0;--t:#0f172a;--m:#64748b}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t)}
+h1,h2,h3{margin:0}h3{font-size:15px}
+main{max-width:1150px;margin:0 auto;padding:16px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.sp{flex:1}.mt{color:var(--m)}
+.tab{border:1px solid var(--b);background:#fff;border-radius:999px;padding:6px 14px;cursor:pointer;font:inherit}
+.tab.on{background:var(--a);border-color:var(--a);color:#fff}
+button,input,select{font:inherit}
+button{border:1px solid var(--b);background:#fff;border-radius:8px;padding:7px 12px;cursor:pointer}
+button:hover{background:#f1f5f9}
+button.pri{background:var(--a);border-color:var(--a);color:#fff}button.pri:hover{background:var(--ad)}
+button.del{color:#be123c}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--a);outline-offset:1px}
+input,select{border:1px solid #cbd5e1;border-radius:8px;padding:7px 9px;background:#fff;min-width:0}
+label{display:block;font-weight:600;font-size:12px;margin:10px 0 4px}
+label input{display:block;width:100%;font-weight:400}
+.card{background:#fff;border:1px solid var(--b);border-radius:12px;padding:16px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
+.g5{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+.row{display:flex;gap:8px;align-items:center;margin-top:12px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--b);white-space:nowrap}
+th{font-size:12px;color:var(--m)}
+td input{width:76px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.ch text{fill:var(--m);font-size:11px}
+.up{color:#059669}.dn{color:#be123c}
+.empty{text-align:center;padding:40px 16px}
+.toast{position:fixed;bottom:16px;right:16px;background:var(--t);color:#fff;padding:10px 14px;border-radius:8px;z-index:9}
+.toast.err{background:#be123c}
+dialog{border:1px solid var(--b);border-radius:12px;width:min(480px,94vw);padding:20px}
+dialog::backdrop{background:rgba(15,23,42,.4)}
+.auth{max-width:340px;margin:12vh auto}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<dialog id="cd"></dialog>
+<script>
+const sb = supabase.createClient(
+  'https://lxkalpglmelzggkiazfw.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4a2FscGdsbWVsemdna2lhemZ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQzMTE1NzMsImV4cCI6MjEwOTg4NzU3M30.NILzEMAQAO_8j9AE4YQrhuUOqh3ZQ-CiEeeNA7sdEJQ'
+);
+const COLORS = ['#7c3aed','#059669','#e11d48','#d97706','#0891b2','#2563eb','#ea580c','#db2777'];
+const PRESETS = {
+  ielts: {unit:'Band',min:0,max:9,step:.5,target:7.5,parts:['Listening','Reading','Writing','Speaking']},
+  pct:   {unit:'%',min:0,max:100,step:1,target:80,parts:[]},
+  pts:   {unit:'pts',min:0,max:50,step:1,target:40,parts:[]}
+};
+const S = {user:null,courses:[],students:[],enr:[],tests:[],cid:null,metric:'_',edit:null};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => (v === undefined || v === null || v === '' || isNaN(v)) ? null : +v;
+const fmt = n => n === null ? '–' : +(+n).toFixed(2);
+const uid = () => crypto.randomUUID();
+
+function toast(m, err) {
+  const d = document.createElement('div');
+  d.className = 'toast' + (err ? ' err' : '');
+  d.textContent = m;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 3500);
+}
+async function q(p) {
+  const r = await p;
+  if (r.error) { toast(r.error.message, 1); throw r.error; }
+  return r.data;
+}
+
+/* ---------- data ---------- */
+async function load() {
+  const g = n => q(sb.from(n).select('*'));
+  const [c, s, e, t] = await Promise.all([g('tracker-courses'), g('tracker-students'), g('tracker-enrollments'), g('tracker-tests')]);
+  S.courses = c.sort((a, b) => a.created_at < b.created_at ? -1 : 1);
+  S.students = s; S.enr = e; S.tests = t;
+  if (!S.courses.some(x => x.id === S.cid)) S.cid = S.courses[0]?.id || null;
+}
+const course = () => S.courses.find(c => c.id === S.cid);
+const roster = () => S.enr.filter(e => e.course_id === S.cid).map(e => S.students.find(s => s.id === e.student_id)).filter(Boolean);
+const tests = () => S.tests.filter(t => t.course_id === S.cid)
+  .sort((a, b) => a.test_date < b.test_date ? -1 : a.test_date > b.test_date ? 1 : (a.created_at < b.created_at ? -1 : 1));
+
+// metric '_' = overall (average of all sub-scores, rounded to the course step, only when every part is entered)
+function val(c, t, sid, m) {
+  const x = t.scores?.[sid];
+  if (!x) return null;
+  if (m !== '_') return num(x[m]);
+  if (!c.parts.length) return num(x._);
+  const v = c.parts.map(p => num(x[p.id]));
+  if (v.some(n => n === null)) return null;
+  return Math.round(v.reduce((a, b) => a + b, 0) / v.length / c.step) * c.step;
+}
+const series = (c, ts, sid, m) => ts.map(t => val(c, t, sid, m)).filter(v => v !== null);
+
+/* ---------- render ---------- */
+function render() {
+  const app = $('#app');
+  if (!S.user) {
+    app.innerHTML = `<form id="auth" class="card auth"><h2>ExamPulse</h2>
+      <label>Email<input name="email" type="email" required autocomplete="email"></label>
+      <label>Password<input name="password" type="password" required minlength="6" autocomplete="current-password"></label>
+      <div class="row"><button class="pri" data-mode="in">Sign in</button><button data-mode="up">Create account</button></div></form>`;
+    return;
+  }
+  const c = course();
+  const nav = `<div class="bar"><h2>ExamPulse</h2>${S.courses.map(x => `<button class="tab${x.id === S.cid ? ' on' : ''}" data-act="tab" data-id="${x.id}">${esc(x.name)}</button>`).join('')}
+    <button data-act="newCourse">+ Course</button><span class="sp"></span><span class="mt">${esc(S.user.email)}</span><button data-act="out">Sign out</button></div>`;
+  if (!c) {
+    app.innerHTML = nav + `<div class="card empty"><h3>No courses yet</h3><p class="mt">Add a course to start tracking scores.</p><button class="pri" data-act="newCourse">Add course</button></div>`;
+    return;
+  }
+  const opts = c.parts.length ? `<select id="metric"><option value="_">Overall</option>${c.parts.map(p => `<option value="${p.id}"${S.metric === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+  app.innerHTML = nav + `
+  <div class="head"><h2>${esc(c.name)}</h2><span class="mt">${fmt(c.min_score)}–${fmt(c.max_score)} ${esc(c.unit)}${c.target_score != null ? ` · target ${fmt(c.target_score)}` : ''}</span>
+    <span class="sp"></span><button data-act="csv">Export CSV</button><button data-act="editCourse">Course settings</button></div>
+  <div class="grid">
+    <section class="card"><div class="head"><h3>Progress</h3><span class="sp"></span>${opts}</div><div id="viz"></div></section>
+    <section class="card"><h3>Students</h3>
+      <form id="addStu" class="row"><input name="n" list="allStu" placeholder="Student name" required style="flex:1"><button class="pri">Add</button></form>
+      <datalist id="allStu">${S.students.map(s => `<option value="${esc(s.name)}">`).join('')}</datalist>
+      <div id="roster"></div></section>
+  </div>
+  <section class="card"><h3>${S.edit ? 'Edit test' : 'Record test'}</h3><div id="form"></div></section>
+  <section class="card"><h3>Tests</h3><div id="log" class="wrap"></div></section>`;
+  renderRoster(); renderViz(); renderForm(); renderLog();
+}
+function renderRoster() {
+  const r = roster();
+  $('#roster').innerHTML = r.length ? r.map(s => `<div class="row"><span class="dot" style="background:${s.color}"></span><span style="flex:1">${esc(s.name)}</span><button class="del" data-act="rmStu" data-id="${s.id}" aria-label="Remove ${esc(s.name)}">Remove</button></div>`).join('') : '<p class="mt">No students yet.</p>';
+}
+function renderViz() {
+  const c = course(), ts = tests(), ros = roster(), m = S.metric;
+  const pts = ts.filter(t => ros.some(s => val(c, t, s.id, m) !== null));
+  let svg = '<p class="mt">No scores yet.</p>';
+  if (pts.length) {
+    const W = 760, H = 300, L = 40, R = 16, T = 14, B = 44, lo = c.min_score, hi = c.max_score;
+    const x = i => L + (pts.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (pts.length - 1));
+    const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+    let g = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + (hi - lo) * i / 4;
+      g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="#e2e8f0"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${+v.toFixed(1)}</text>`;
+    }
+    if (c.target_score != null) g += `<line x1="${L}" x2="${W - R}" y1="${y(c.target_score)}" y2="${y(c.target_score)}" stroke="#059669" stroke-dasharray="5 4"/>`;
+    pts.forEach((t, i) => g += `<text x="${x(i)}" y="${H - B + 16}" text-anchor="middle">${esc(t.name.slice(0, 12))}</text><text x="${x(i)}" y="${H - B + 30}" text-anchor="middle">${t.test_date.slice(5)}</text>`);
+    ros.forEach(s => {
+      const p = pts.map((t, i) => [i, val(c, t, s.id, m)]).filter(a => a[1] !== null);
+      g += `<polyline fill="none" stroke="${s.color}" stroke-width="2.5" points="${p.map(a => x(a[0]) + ',' + y(a[1])).join(' ')}"/>` +
+        p.map(a => `<circle cx="${x(a[0])}" cy="${y(a[1])}" r="4.5" fill="${s.color}"><title>${esc(s.name)} – ${esc(pts[a[0]].name)}: ${fmt(a[1])}</title></circle>`).join('');
+    });
+    svg = `<svg class="ch" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Score progress chart">${g}</svg>`;
+  }
+  // summary table
+  const pc = c.parts;
+  const rows = ros.map(s => {
+    const v = series(c, ts, s.id, m), last = v.at(-1) ?? null, d = v.length > 1 ? last - v[0] : null;
+    const avg = v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    const gap = last !== null && c.target_score != null ? last - c.target_score : null;
+    return `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</td><td>${v.length}</td><td>${fmt(last)}</td>
+      <td class="${d > 0 ? 'up' : d < 0 ? 'dn' : ''}">${d === null ? '–' : (d > 0 ? '+' : '') + fmt(d)}</td><td>${fmt(avg)}</td>
+      <td class="${gap >= 0 ? 'up' : 'dn'}">${gap === null ? '–' : (gap > 0 ? '+' : '') + fmt(gap)}</td>
+      ${pc.map(p => `<td>${fmt(series(c, ts, s.id, p.id).at(-1) ?? null)}</td>`).join('')}</tr>`;
+  }).join('');
+  $('#viz').innerHTML = svg + (ros.length ? `<div class="wrap" style="margin-top:12px"><table><tr><th>Student</th><th>Tests</th><th>Latest</th><th>Change</th><th>Average</th><th>vs target</th>${pc.map(p => `<th>${esc(p.name)}</th>`).join('')}</tr>${rows}</table></div>` : '');
+}
+function renderForm() {
+  const c = course(), ros = roster(), t = S.edit && S.tests.find(x => x.id === S.edit);
+  if (!ros.length) { $('#form').innerHTML = '<p class="mt">Add a student first.</p>'; return; }
+  const cols = c.parts.length ? c.parts : [{id: '_', name: 'Score'}];
+  $('#form').innerHTML = `<form id="testForm"><div class="row" style="margin-top:0"><input name="tdate" type="date" required value="${t ? t.test_date : new Date().toISOString().slice(0, 10)}">
+    <input name="tname" placeholder="Test name" required style="flex:1" value="${t ? esc(t.name) : ''}"></div>
+    <div class="wrap"><table><tr><th>Student</th>${cols.map(p => `<th>${esc(p.name)}</th>`).join('')}</tr>
+    ${ros.map(s => `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</td>${cols.map(p => `<td><input type="number" data-s="${s.id}" data-p="${p.id}" min="${c.min_score}" max="${c.max_score}" step="${c.step}" value="${t?.scores?.[s.id]?.[p.id] ?? ''}"></td>`).join('')}</tr>`).join('')}</table></div>
+    <div class="row"><button class="pri">${S.edit ? 'Save changes' : 'Save test'}</button>${S.edit ? '<button type="button" data-act="cancelEdit">Cancel</button>' : ''}</div></form>`;
+}
+function renderLog() {
+  const ts = tests().reverse();
+  $('#log').innerHTML = ts.length ? `<table>${ts.map(t => `<tr><td>${t.test_date}</td><td style="width:100%">${esc(t.name)}</td><td>${Object.keys(t.scores || {}).length} students</td>
+    <td><button data-act="editTest" data-id="${t.id}">Edit</button> <button class="del" data-act="delTest" data-id="${t.id}">Delete</button></td></tr>`).join('')}</table>` : '<p class="mt">No tests yet.</p>';
+}
+
+/* ---------- course dialog ---------- */
+const partRow = p => `<div class="row" style="margin-top:6px"><input data-pid="${p.id || ''}" value="${esc(p.name)}" placeholder="e.g. Listening" style="flex:1"><button type="button" class="del" data-act="rmPart" aria-label="Remove sub-score">×</button></div>`;
+function openCourse(edit) {
+  const c = edit ? course() : {name: '', unit: '%', min_score: 0, max_score: 100, step: 1, target_score: 80, parts: []};
+  const d = $('#cd');
+  d.dataset.id = edit ? c.id : '';
+  d.innerHTML = `<form id="cf"><h3>${edit ? 'Course settings' : 'New course'}</h3>
+    ${edit ? '' : `<div class="row"><span class="mt">Start from</span><button type="button" data-preset="ielts">IELTS</button><button type="button" data-preset="pct">Percent</button><button type="button" data-preset="pts">Points</button></div>`}
+    <label>Name<input name="name" required value="${esc(c.name)}"></label>
+    <div class="g5"><label>Unit<input name="unit" value="${esc(c.unit)}"></label><label>Min<input name="min" type="number" step="any" required value="${c.min_score}"></label>
+      <label>Max<input name="max" type="number" step="any" required value="${c.max_score}"></label><label>Step<input name="step" type="number" step="any" min="0.01" required value="${c.step}"></label>
+      <label>Target<input name="target" type="number" step="any" value="${c.target_score ?? ''}"></label></div>
+    <label>Sub-scores (optional)</label><div id="parts">${c.parts.map(partRow).join('')}</div>
+    <div class="row"><button type="button" data-act="addPart">+ Sub-score</button></div>
+    <div class="row">${edit ? '<button type="button" class="del" data-act="delCourse">Delete course</button>' : ''}<span class="sp"></span><button type="button" data-act="closeDlg">Cancel</button><button class="pri">Save</button></div></form>`;
+  d.showModal();
+}
+async function saveCourse(f) {
+  const d = $('#cd'), id = d.dataset.id;
+  const row = {name: f.name.value.trim(), unit: f.unit.value.trim(), min_score: +f.min.value, max_score: +f.max.value, step: +f.step.value || 1,
+    target_score: num(f.target.value),
+    parts: [...f.querySelectorAll('[data-pid]')].filter(i => i.value.trim()).map(i => ({id: i.dataset.pid || uid(), name: i.value.trim()}))};
+  if (row.max_score <= row.min_score) return toast('Max must be greater than min.', 1);
+  if (id) { await q(sb.from('tracker-courses').update(row).eq('id', id)); Object.assign(S.courses.find(c => c.id === id), row); }
+  else { const nid = uid(); await q(sb.from('tracker-courses').insert({id: nid, ...row})); S.courses.push({id: nid, created_at: new Date().toISOString(), ...row}); S.cid = nid; }
+  S.metric = '_'; S.edit = null; d.close(); render();
+}
+
+/* ---------- actions ---------- */
+async function saveTest(f) {
+  const c = course(), sc = {};
+  f.querySelectorAll('[data-s]').forEach(i => { const v = num(i.value); if (v !== null) (sc[i.dataset.s] ??= {})[i.dataset.p] = v; });
+  if (!Object.keys(sc).length) return toast('Enter at least one score.', 1);
+  const row = {course_id: c.id, name: f.tname.value.trim(), test_date: f.tdate.value, scores: sc};
+  if (S.edit) { await q(sb.from('tracker-tests').update(row).eq('id', S.edit)); Object.assign(S.tests.find(t => t.id === S.edit), row); }
+  else { const id = uid(); await q(sb.from('tracker-tests').insert({id, ...row})); S.tests.push({id, created_at: new Date().toISOString(), ...row}); }
+  S.edit = null; render(); toast('Test saved.');
+}
+async function addStudent(f) {
+  const name = f.n.value.trim();
+  let s = S.students.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (s && S.enr.some(e => e.course_id === S.cid && e.student_id === s.id)) return toast('Already in this course.', 1);
+  if (!s) {
+    s = {id: uid(), name, color: COLORS[S.students.length % COLORS.length]};
+    await q(sb.from('tracker-students').insert(s)); S.students.push(s);
+  }
+  const e = {course_id: S.cid, student_id: s.id};
+  await q(sb.from('tracker-enrollments').insert(e)); S.enr.push(e);
+  render();
+}
+async function rmStudent(id) {
+  const s = S.students.find(x => x.id === id);
+  if (!confirm(`Remove ${s.name} from this course?`)) return;
+  await q(sb.from('tracker-enrollments').delete().eq('course_id', S.cid).eq('student_id', id));
+  S.enr = S.enr.filter(e => !(e.course_id === S.cid && e.student_id === id));
+  if (!S.enr.some(e => e.student_id === id)) { await q(sb.from('tracker-students').delete().eq('id', id)); S.students = S.students.filter(x => x.id !== id); }
+  render();
+}
+function csv() {
+  const c = course(), ros = roster(), cols = c.parts.length ? [...c.parts, {id: '_', name: 'Overall'}] : [{id: '_', name: 'Score'}];
+  const rows = [['Date', 'Test', ...ros.flatMap(s => cols.map(p => `${s.name} – ${p.name}`))]];
+  tests().forEach(t => rows.push([t.test_date, t.name, ...ros.flatMap(s => cols.map(p => val(c, t, s.id, p.id) ?? ''))]));
+  const text = rows.map(r => r.map(v => /[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type: 'text/csv'}));
+  a.download = c.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-scores.csv';
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+const ACT = {
+  tab: el => { S.cid = el.dataset.id; S.metric = '_'; S.edit = null; render(); },
+  newCourse: () => openCourse(false),
+  editCourse: () => openCourse(true),
+  out: () => sb.auth.signOut(),
+  csv,
+  rmStu: el => rmStudent(el.dataset.id),
+  editTest: el => { S.edit = el.dataset.id; render(); $('#form').scrollIntoView({behavior: 'smooth'}); },
+  cancelEdit: () => { S.edit = null; render(); },
+  delTest: async el => {
+    const t = S.tests.find(x => x.id === el.dataset.id);
+    if (!confirm(`Delete "${t.name}"?`)) return;
+    await q(sb.from('tracker-tests').delete().eq('id', t.id)); S.tests = S.tests.filter(x => x.id !== t.id); render();
+  },
+  addPart: () => $('#parts').insertAdjacentHTML('beforeend', partRow({id: '', name: ''})),
+  rmPart: el => el.parentElement.remove(),
+  closeDlg: () => $('#cd').close(),
+  delCourse: async () => {
+    const c = course();
+    if (!confirm(`Delete "${c.name}" with all its tests? This can't be undone.`)) return;
+    await q(sb.from('tracker-courses').delete().eq('id', c.id));
+    S.courses = S.courses.filter(x => x.id !== c.id); S.tests = S.tests.filter(t => t.course_id !== c.id); S.enr = S.enr.filter(e => e.course_id !== c.id);
+    // drop students that no longer belong to any course
+    const orphans = S.students.filter(s => !S.enr.some(e => e.student_id === s.id));
+    for (const s of orphans) await q(sb.from('tracker-students').delete().eq('id', s.id));
+    S.students = S.students.filter(s => !orphans.includes(s));
+    S.cid = S.courses[0]?.id || null; $('#cd').close(); render();
+  }
+};
+document.addEventListener('click', e => {
+  const p = e.target.closest('[data-preset]');
+  if (p) {
+    const f = $('#cf'), v = PRESETS[p.dataset.preset];
+    if (!f.name.value) f.name.value = p.textContent;
+    f.unit.value = v.unit; f.min.value = v.min; f.max.value = v.max; f.step.value = v.step; f.target.value = v.target;
+    $('#parts').innerHTML = v.parts.map(n => partRow({id: '', name: n})).join('');
+    return;
+  }
+  const el = e.target.closest('[data-act]');
+  if (el && ACT[el.dataset.act]) ACT[el.dataset.act](el);
+});
+document.addEventListener('change', e => { if (e.target.id === 'metric') { S.metric = e.target.value; renderViz(); } });
+document.addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    if (f.id === 'auth') {
+      const cred = {email: f.email.value, password: f.password.value};
+      if (e.submitter?.dataset.mode === 'up') {
+        const {data, error} = await sb.auth.signUp(cred);
+        if (error) return toast(error.message, 1);
+        if (!data.session) toast('Check your email to confirm the account.');
+      } else {
+        const {error} = await sb.auth.signInWithPassword(cred);
+        if (error) toast(error.message, 1);
+      }
+    }
+    else if (f.id === 'cf') await saveCourse(f);
+    else if (f.id === 'testForm') await saveTest(f);
+    else if (f.id === 'addStu') await addStudent(f);
+  } catch (err) { console.error(err); }
+});
+
+/* ---------- boot ---------- */
+sb.auth.onAuthStateChange((_, session) => {
+  const u = session?.user || null;
+  if (u?.id === S.user?.id && S.booted) return;      // ignore token refreshes
+  S.user = u; S.booted = true;
+  setTimeout(async () => {
+    if (u) { try { await load(); } catch (e) {} } else Object.assign(S, {courses: [], students: [], enr: [], tests: [], cid: null, edit: null});
+    render();
+  }, 0);
+});
+</script>
+</body>
+</html>
